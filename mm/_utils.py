@@ -14,7 +14,7 @@ def marginalize_2d(orig_tensor, keep_idx, keep_idx_last_dim: list = None):
     if keep_idx_last_dim is None:
         keep_idx_last_dim = keep_idx
     else:
-        keep_idx_last_dim = torch.tensor(keep_idx_last_dim)
+        keep_idx_last_dim = torch.tensor(keep_idx_last_dim).to(orig_tensor.device)
     marginalized = torch.index_select(
         torch.index_select(orig_tensor, dim=-2, index=keep_idx),
         dim=-1, index=keep_idx_last_dim)
