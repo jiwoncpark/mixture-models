@@ -12,7 +12,7 @@ class LowRankGMM(torch.nn.Module):
         parameterized by :attr:`cov_factor` and :attr:`cov_diag`::
 
         covariance_matrix = cov_factor @ cov_factor.T + cov_diag
-        
+
         """
         super().__init__()
         self.dim = dim
@@ -29,13 +29,13 @@ class LowRankGMM(torch.nn.Module):
         cov_diags = cov_diags.reshape(-1, self.num_components, self.dim).exp()
         out_dict = {
             'pis': pis,
-            'mus': mus,
-            'cov_factors': cov_factors,
-            'cov_diags': cov_diags
+            'loc': mus,
+            'cov_factor': cov_factors,
+            'cov_diag': cov_diags
         }
         return out_dict
 
-    def _get_distribution(self, pis: Tensor, mus: Tensor, cov_factors: Tensor, cov_diags: Tensor):
+    def _get_distribution(self, pis: Tensor, **kwargs):
         """
         Parameters
         ----------
@@ -50,7 +50,7 @@ class LowRankGMM(torch.nn.Module):
         
         """
         mix = D.Categorical(logits=pis)
-        comp = D.LowRankMultivariateNormal(mus, cov_factors, cov_diags)
+        comp = D.LowRankMultivariateNormal(**kwargs)
         gmm_dist = D.MixtureSameFamily(mix, comp)
         return gmm_dist
     
