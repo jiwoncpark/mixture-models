@@ -1,7 +1,7 @@
 import unittest
 import numpy.testing as npt
 import torch
-from gmm import LowRankGMM
+from mm import LowRankGMM
 
 
 class TestLowRankGMM(unittest.TestCase):

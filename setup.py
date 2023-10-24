@@ -2,7 +2,7 @@ from setuptools import setup, find_packages
 
 
 setup(
-      name='gmm',
+      name='mm',
       version='v0.10',
       author='Ji Won Park',
       packages=find_packages(),

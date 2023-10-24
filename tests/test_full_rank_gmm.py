@@ -1,7 +1,7 @@
 import unittest
 import numpy.testing as npt
 import torch
-from gmm import FullRankGMM
+from mm import FullRankGMM
 
 
 class TestLowRankGMM(unittest.TestCase):
@@ -32,7 +32,7 @@ class TestLowRankGMM(unittest.TestCase):
         label = label[:, keep_idx]
         nll = gmm.get_marginal_nll(out_pred, label, keep_idx=keep_idx)
         return nll
-    
+
     def get_conditional_nll(self, gmm, out_pred, label, keep_idx):
         cond_idx = [d for d in range(gmm.dim) if d not in keep_idx]
         condition_vals = label[:, cond_idx]
