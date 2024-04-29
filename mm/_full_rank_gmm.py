@@ -6,9 +6,16 @@ from mm._utils import marginalize_1d, marginalize_2d
 
 
 class FullRankGMM(torch.nn.Module):
-    def __init__(self, dim: int, num_components: int):
+    def __init__(
+        self, dim: int, num_components: int, is_circular: bool = False,
+        to_rad: float = 1.0):
         """
         Mixture of multivariate Gaussians
+
+        Parameters
+        ----------
+        to_rad : float
+            Conversion factor to rad, expected of asin/sin if is_circular
         """
         super().__init__()
         self.dim = dim
@@ -18,6 +25,8 @@ class FullRankGMM(torch.nn.Module):
         self.tril_len = len(self.tril_idx[0])
         self.shapes = [1, self.dim, self.tril_len]
         self.out_dim = sum(self.shapes)*self.num_components
+        self.is_circular = is_circular
+        self.to_rad = to_rad
 
     def _format(self, out_pred: Tensor):
         out_pred = out_pred.reshape(-1, self.num_components, sum(self.shapes))
@@ -36,6 +45,18 @@ class FullRankGMM(torch.nn.Module):
         }
         return out_dict
 
+    def get_covariance_matrix(self, scale_tril):
+        """
+        Return loc parameter
+
+        Returns
+        -------
+        scale_tril : Tensor
+            scale_tril param with shape [batch_size, num_components, dim, dim]
+        """
+        cov_mat = scale_tril @ scale_tril.mT  # L L^T
+        return cov_mat
+
     def _get_distribution(self, pis: Tensor, **kwargs):
         """
         Parameters
@@ -51,11 +72,11 @@ class FullRankGMM(torch.nn.Module):
         mix = D.Categorical(logits=pis)
         comp = D.MultivariateNormal(**kwargs)
         gmm_dist = D.MixtureSameFamily(mix, comp)
-        return gmm_dist
+        return (gmm_dist, (mix, comp))
 
     def get_distribution(self, out_pred):
         formatted = self._format(out_pred)
-        return self._get_distribution(**formatted)
+        return self._get_distribution(**formatted)[0]
 
     def forward(self, pred: Tensor, label: Tensor):
         """
@@ -65,9 +86,33 @@ class FullRankGMM(torch.nn.Module):
             Predicted distributional params of shape `[batch_size, out_dim]`
         labels : Tensor
             Labels of shape `[batch_size, dim]`
+            or `[batch_size, num_components, dim]` if is_circular
         """
-        gmm_dist = self.get_distribution(pred)
-        return -gmm_dist.log_prob(label)
+        formatted = self._format(pred)
+        gmm_dist, (mix, comp) = self._get_distribution(**formatted)
+
+        if self.is_circular:
+            return self.get_circular_nll(mix, comp, label)
+        else:
+            return -gmm_dist.log_prob(label)
+
+    def get_circular_nll(self, mix, comp, label):
+        log_prob_comp = comp.log_prob(label)  # [batch_size, num_components]
+        log_prob = (mix.logits + log_prob_comp).logsumexp(-1)
+        return -log_prob
+
+    # def get_cdf(self, pred: Tensor, label: Tensor):
+    #     """
+    #     Parameters
+    #     ----------
+    #     pred : Tensor
+    #         Predicted distributional params of shape `[batch_size, out_dim]`
+    #     labels : Tensor
+    #         Labels of shape `[batch_size, dim]`
+    #     """
+    #     formatted = self._format(pred)
+    #     _, (mix, comp) = self._get_distribution(**formatted)
+    #     comp_cdf = comp.cdf(label)  # [batch_size, num_components]
 
     def sample(self, pred: Tensor, size: torch.Size):
         gmm_dist = self.get_distribution(pred)
@@ -83,8 +128,11 @@ class FullRankGMM(torch.nn.Module):
 
     def get_marginal_nll(self, out_pred: Tensor, label: Tensor, keep_idx: list):
         formatted = self._format_marginal_params(out_pred, keep_idx)
-        marginal_gmm_dist = self._get_distribution(**formatted)
-        return -marginal_gmm_dist.log_prob(label)
+        gmm_dist, (mix, comp) = self._get_distribution(**formatted)
+        if self.is_circular:
+            return self.get_circular_nll(mix, comp, label)
+        else:
+            return -gmm_dist.log_prob(label)
 
     def get_conditional_nll(self, out_pred: Tensor, label: Tensor, condition_vals: Tensor, condition_idx: list):
         """
@@ -93,7 +141,8 @@ class FullRankGMM(torch.nn.Module):
         Parameters
         ----------
         condition_vals : Tensor
-            Conditioned values of shape `[batch_size, len(condition_idx)]`
+            Conditioned values of shape `[batch_size, len(condition_idx)]` or
+            `[batch_size, num_components, len(condition_idx)]` if is_circular
 
         """
         keep_idx = [d for d in range(self.dim) if d not in condition_idx]
@@ -104,7 +153,8 @@ class FullRankGMM(torch.nn.Module):
         marginal_cond_formatted = self._format_marginal_params(
             out_pred, condition_idx)  # params of p(cond)
 
-        condition_vals = condition_vals.unsqueeze(1)  # [batch_size, 1, len(condition_idx)]
+        if not self.is_circular:
+            condition_vals = condition_vals.unsqueeze(1)  # [batch_size, 1, len(condition_idx)]
         covs_keep = marginal_keep_formatted['covariance_matrix']
         covs = formatted['scale_tril'] @ formatted['scale_tril'].mT
         covs_keep_cond = marginalize_2d(
@@ -123,18 +173,27 @@ class FullRankGMM(torch.nn.Module):
         # Define new pis
         mix = D.Categorical(logits=formatted['pis'])
         marginal_cond_comp = D.MultivariateNormal(
-            loc=marginal_cond_formatted['loc'],
-            precision_matrix=covs_cond_inv)
+            loc=marginal_cond_formatted['loc'],  # [batch_size, num_components, len(condition_idx)]
+            precision_matrix=covs_cond_inv)  # # [batch_size, num_components, len(condition_idx), len(condition_idx)]
         marginal_cond_gmm = D.MixtureSameFamily(mix, marginal_cond_comp)
+        if self.is_circular:
+            marginal_cond_log_prob = self.get_circular_nll(
+                mix, marginal_cond_comp, condition_vals)
+        else:
+            marginal_cond_log_prob = -marginal_cond_gmm.log_prob(
+                condition_vals.squeeze(1))
+
         new_log_pis = mix.logits + marginal_cond_comp.log_prob(
-            condition_vals) - marginal_cond_gmm.log_prob(
-                condition_vals.squeeze(1)).unsqueeze(-1)
+            condition_vals) - marginal_cond_log_prob.unsqueeze(-1)
         # [batch_size, num_components]
 
         # Final cond prob
         mix = D.Categorical(logits=new_log_pis)
         gmm_dist = D.MixtureSameFamily(mix, comp)
-        return -gmm_dist.log_prob(label)
+        if self.is_circular:
+            return self.get_circular_nll(mix, comp, label)
+        else:
+            return -gmm_dist.log_prob(label)
 
     def string(self):
         return "mixture of low-rank multivariate Gaussians"
